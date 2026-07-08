@@ -1,0 +1,1 @@
+{"id":45,"name":"变量测试","entries":[{"identifier":"f8cacf9d-18e7-4234-b842-bb23ca04c757","name":"变量","findRegex":"\\[\\[VAR_NAME\\]\\](.*?)\\[\\[\\/VAR_NAME\\]\\]","replaceString":"（留空）","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
