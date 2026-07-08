@@ -1,0 +1,1 @@
+{"id":257,"name":"Tomoe's Regex","entries":[{"identifier":"ab843c20-74b6-40e1-9c86-633a52ac9a3c","name":"JailbreakAI","findRegex":"\\u2800","replaceString":" ","trimStrings":[],"placements":["char","reasoning"],"timing":"receive","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
