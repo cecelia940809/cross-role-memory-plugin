@@ -50,9 +50,9 @@
   }
 
   async function cloudSave(meta, messages) {
-    if (!cloudConfigured()) return;
+    if (!cloudConfigured()) return false;
     try {
-      await fetchTO(serverUrl() + '/memory/save', {
+      var resp = await fetchTO(serverUrl() + '/memory/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -60,7 +60,12 @@
           note: meta.note || '', savedAt: meta.savedAt, messages: messages
         })
       });
-    } catch (e) { }
+      var data = await resp.json();
+      return !!(data && data.ok);
+    } catch (e) {
+      console.error('[跨角色记忆 ST扩展] 云端保存失败：', e);
+      return false;
+    }
   }
 
   async function cloudList(excludeName) {
@@ -304,6 +309,7 @@
     if (tab === 'net') {
       if (el('ccm-cloud-url')) el('ccm-cloud-url').value = serverUrl();
       if (el('ccm-cloud-key')) el('ccm-cloud-key').value = secretKey();
+      if (el('ccm-net-url') && !el('ccm-net-url').value) el('ccm-net-url').value = serverUrl() ? (serverUrl() + '/memory/list?key=' + secretKey()) : '';
     }
   }
 
@@ -351,6 +357,10 @@
         + "<div class='ccm-section'><label class='ccm-label'>\u5bc6\u94a5</label><input class='ccm-input' id='ccm-cloud-key' placeholder='\u548c Tavo \u90a3\u8fb9\u4e00\u6837\u7684\u5bc6\u94a5'></div>"
         + "<button class='ccm-btn full' id='ccm-cloud-save-cfg'>\u4fdd\u5b58\u4e91\u540c\u6b65\u8bbe\u7f6e</button>"
         + "<div class='ccm-footer' style='margin-top:6px;'>\u4e0d\u586b\u7684\u8bdd\u63d2\u4ef6\u53ea\u5728\u672c\u8bbe\u5907\u672c\u5730\u4fdd\u5b58/\u8c03\u53d6\uff0c\u4e0d\u5f71\u54cd\u6b63\u5e38\u4f7f\u7528</div>"
+        + "<hr style='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;'>"
+        + "<div class='ccm-section'><label class='ccm-label'>\u8fde\u901a\u6027\u6d4b\u8bd5 <small style='color:#7A7790;'>\uff08\u76f4\u63a5\u6d4b\u8bd5\u4e91\u540c\u6b65\u63a5\u53e3\u80fd\u4e0d\u80fd\u53d1\u9001\u8bf7\u6c42\uff09</small></label><input class='ccm-input' id='ccm-net-url' placeholder='\u4f1a\u81ea\u52a8\u7528\u4e0a\u9762\u586b\u7684\u670d\u52a1\u5668\u5730\u5740'></div>"
+        + "<button class='ccm-btn full outline' id='ccm-net-test'>\u53d1\u9001\u6d4b\u8bd5\u8bf7\u6c42</button>"
+        + "<div class='ccm-section' style='margin-top:10px;'><div id='ccm-net-result' style='font-size:12px;color:#B8B5C8;line-height:1.6;white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.05);border-radius:10px;padding:10px;min-height:40px;'>\u70b9\u51fb\u4e0a\u9762\u7684\u6309\u94ae\u5f00\u59cb\u6d4b\u8bd5</div></div>"
         + "</div>";
       D.body.appendChild(ov);
       ov.addEventListener('click', function (e) { if (e.target === ov) ov.classList.remove('open'); });
@@ -394,6 +404,26 @@
       await pushG(SECRET_KEY_KEY, key);
       showToast(url && key ? '云同步设置已保存' : '已清空云同步设置（只用本地存储）');
     });
+    el('ccm-net-test').addEventListener('click', async function () {
+      var url = el('ccm-net-url').value.trim();
+      var box = el('ccm-net-result');
+      if (!url) { showToast('请先填一个测试地址'); return; }
+      box.textContent = '请求中...';
+      var t0 = Date.now();
+      try {
+        var resp = await fetch(url, { method: 'GET' });
+        var ms = Date.now() - t0;
+        var text = '';
+        try { text = await resp.text(); } catch (e0) { text = '(读取响应失败：' + (e0 && e0.message ? e0.message : e0) + ')'; }
+        var preview = text.length > 300 ? text.slice(0, 300) + '...' : text;
+        box.textContent = '✅ 请求成功\n状态码：' + resp.status + '\n耗时：' + ms + 'ms\n响应预览：\n' + preview;
+        showToast('请求成功，状态码 ' + resp.status);
+      } catch (e1) {
+        var ms2 = Date.now() - t0;
+        box.textContent = '❌ 请求失败（耗时 ' + ms2 + 'ms）\n错误信息：' + (e1 && e1.message ? e1.message : String(e1)) + '\n\n如果这里报错，大概率是这个页面环境不允许直接发外部请求（比如 CSP 策略拦截）。';
+        showToast('请求失败，看下面详情');
+      }
+    });
   }
 
   async function saveSnapshotWithCount(note, cnt) {
@@ -414,8 +444,9 @@
     }
     cache[IDX_KEY] = list;
     await pushG(IDX_KEY, list);
-    cloudSave(entry, simplified);
-    showToast('已保存「' + name + '」的对话快照（' + simplified.length + '条）' + (cloudConfigured() ? '，正在同步云端' : ''));
+    var cloudOk = false;
+    if (cloudConfigured()) { cloudOk = await cloudSave(entry, simplified); }
+    showToast('已保存「' + name + '」的对话快照（' + simplified.length + '条）' + (cloudConfigured() ? (cloudOk ? '，云端同步成功' : '，云端同步失败（看控制台日志）') : ''));
     return true;
   }
 
