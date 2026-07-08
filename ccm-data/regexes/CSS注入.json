@@ -1,0 +1,1 @@
+{"id":259,"name":"CSS注入","entries":[{"identifier":"f3e903eb-a382-49b0-9879-19fca9cd703a","name":"CSS","findRegex":"^","replaceString":"<script src=\"https://cdn.tailwindcss.com\"></script>","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":0,"maxDepth":0,"enabled":true}]}
