@@ -1,0 +1,1 @@
+{"id":256,"name":"空格","entries":[{"identifier":"cf63ff79-51b0-4bee-a33e-33844a5ab650","name":"控过","findRegex":"\\u2800","replaceString":"  ","trimStrings":[],"placements":["char"],"timing":"send","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
