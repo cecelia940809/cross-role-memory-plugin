@@ -1,0 +1,1 @@
+{"id":254,"name":"0602","entries":[{"identifier":"ef831fce-885e-4f2f-95fb-c687cdd9b08a","name":"隐藏","findRegex":"<thinking>[\\s\\S]*?<\\/thinking>","replaceString":"","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
