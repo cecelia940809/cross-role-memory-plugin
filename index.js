@@ -10,8 +10,10 @@
   var IDX_KEY = 'ccm_index';
   var SNAP_PREFIX = 'ccm_snap_';
   var NAME_KEY = 'ccm_my_name';
-  var SERVER_URL_KEY = 'ccm_server_url';
-  var SECRET_KEY_KEY = 'ccm_secret_key';
+  var GH_TOKEN_KEY = 'ccm_gh_token';
+  var GH_REPO_KEY = 'ccm_gh_repo';
+  var GH_BRANCH_KEY = 'ccm_gh_branch';
+  var GH_DATA_DIR = 'ccm-data';
   var MAX_SNAPS = 30;
   var MAX_MSG_PER_SNAP = 40;
   var LS_PREFIX = 'ccm_st_';
@@ -27,20 +29,22 @@
 
   function idx() { var l = val(IDX_KEY, null); if (!Array.isArray(l)) { l = []; cache[IDX_KEY] = l; } return l; }
   function myName() { return val(NAME_KEY, ''); }
-  function serverUrl() { return (val(SERVER_URL_KEY, '') || '').replace(/\/$/, ''); }
-  function secretKey() { return val(SECRET_KEY_KEY, ''); }
-  function cloudConfigured() { return !!(serverUrl() && secretKey()); }
+  function ghToken() { return val(GH_TOKEN_KEY, ''); }
+  function ghRepo() { return val(GH_REPO_KEY, ''); }
+  function ghBranch() { return val(GH_BRANCH_KEY, '') || 'main'; }
+  function cloudConfigured() { return !!(ghToken() && ghRepo()); }
 
   async function loadAll() {
     var i = await pullG(IDX_KEY); cache[IDX_KEY] = Array.isArray(i) ? i : [];
     var n = await pullC(NAME_KEY); cache[NAME_KEY] = (typeof n === 'string') ? n : '';
-    var su = await pullG(SERVER_URL_KEY); cache[SERVER_URL_KEY] = (typeof su === 'string') ? su : '';
-    var sk = await pullG(SECRET_KEY_KEY); cache[SECRET_KEY_KEY] = (typeof sk === 'string') ? sk : '';
+    var gt = await pullG(GH_TOKEN_KEY); cache[GH_TOKEN_KEY] = (typeof gt === 'string') ? gt : '';
+    var gr = await pullG(GH_REPO_KEY); cache[GH_REPO_KEY] = (typeof gr === 'string') ? gr : '';
+    var gb = await pullG(GH_BRANCH_KEY); cache[GH_BRANCH_KEY] = (typeof gb === 'string') ? gb : '';
   }
 
-  // ===== 云端同步（跟 Tavo 版共用同一套服务器接口，platform 标成 'st'） =====
+  // ===== 云端同步：改用 GitHub 仓库当存储后端，和 Tavo 版共用同一个仓库即可互通 =====
   function fetchTO(url, opts, ms) {
-    ms = ms || 6000;
+    ms = ms || 8000;
     return new Promise(function (resolve, reject) {
       var done = false;
       var timer = setTimeout(function () { if (!done) { done = true; reject(new Error('请求超时')); } }, ms);
@@ -49,19 +53,66 @@
     });
   }
 
+  function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
+  function b64decode(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, '')))); }
+
+  function ghHeaders() {
+    return {
+      'Authorization': 'token ' + ghToken(),
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    };
+  }
+  function ghUrl(path) { return 'https://api.github.com/repos/' + ghRepo() + '/contents/' + path; }
+
+  async function ghGetFile(path) {
+    var resp = await fetchTO(ghUrl(path) + '?ref=' + encodeURIComponent(ghBranch()), { headers: ghHeaders() });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw new Error('GitHub 读取失败：' + resp.status);
+    var data = await resp.json();
+    return { content: b64decode(data.content), sha: data.sha };
+  }
+
+  async function ghPutFile(path, content, sha, message) {
+    var body = { message: message || ('update ' + path), content: b64encode(content), branch: ghBranch() };
+    if (sha) body.sha = sha;
+    var resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+    if (resp.status === 409 && sha) {
+      var latest = await ghGetFile(path);
+      if (latest) {
+        body.sha = latest.sha;
+        resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+      }
+    }
+    if (!resp.ok) throw new Error('GitHub 写入失败：' + resp.status);
+    var data = await resp.json();
+    return data.content ? data.content.sha : undefined;
+  }
+
+  async function ghDeleteFile(path, sha, message) {
+    var resp = await fetchTO(ghUrl(path), {
+      method: 'DELETE', headers: ghHeaders(),
+      body: JSON.stringify({ message: message || ('delete ' + path), sha: sha, branch: ghBranch() })
+    });
+    return resp.ok;
+  }
+
   async function cloudSave(meta, messages) {
     if (!cloudConfigured()) return false;
     try {
-      var resp = await fetchTO(serverUrl() + '/memory/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key: secretKey(), platform: 'st', charName: meta.charName,
-          note: meta.note || '', savedAt: meta.savedAt, messages: messages
-        })
-      });
-      var data = await resp.json();
-      return !!(data && data.ok);
+      var snapPath = GH_DATA_DIR + '/snap_' + meta.id + '.json';
+      var payload = JSON.stringify({ meta: { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: 'st' }, messages: messages });
+      await ghPutFile(snapPath, payload, undefined, '保存对话快照 ' + meta.id);
+
+      var idxPath = GH_DATA_DIR + '/index.json';
+      var existing = null;
+      try { existing = await ghGetFile(idxPath); } catch (e) { }
+      var list = [];
+      if (existing) { try { list = JSON.parse(existing.content); if (!Array.isArray(list)) list = []; } catch (e) { list = []; } }
+      list.unshift({ id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: 'st' });
+      if (list.length > 200) list = list.slice(0, 200);
+      await ghPutFile(idxPath, JSON.stringify(list), existing ? existing.sha : undefined, '更新索引');
+      return true;
     } catch (e) {
       console.error('[跨角色记忆 ST扩展] 云端保存失败：', e);
       return false;
@@ -71,35 +122,41 @@
   async function cloudList(excludeName) {
     if (!cloudConfigured()) return [];
     try {
-      var q = '?key=' + encodeURIComponent(secretKey()) + (excludeName ? '&exclude=' + encodeURIComponent(excludeName) : '');
-      var resp = await fetchTO(serverUrl() + '/memory/list' + q);
-      var data = await resp.json();
-      if (data && data.ok && Array.isArray(data.items)) {
-        return data.items.map(function (it) {
-          return { id: it.id, charName: it.charName, savedAt: it.savedAt, msgCount: it.msgCount, note: it.note || '', source: 'cloud', platform: it.platform || 'unknown' };
-        });
-      }
-    } catch (e) { }
-    return [];
+      var idxPath = GH_DATA_DIR + '/index.json';
+      var f = await ghGetFile(idxPath);
+      if (!f) return [];
+      var list = JSON.parse(f.content);
+      if (!Array.isArray(list)) return [];
+      return list.filter(function (it) { return !excludeName || it.charName !== excludeName; })
+        .map(function (it) { return { id: it.id, charName: it.charName, savedAt: it.savedAt, msgCount: it.msgCount, note: it.note || '', source: 'cloud', platform: it.platform || 'unknown' }; });
+    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端列表读取失败：', e); return []; }
   }
 
   async function cloudFetchItem(id) {
     if (!cloudConfigured()) return null;
     try {
-      var resp = await fetchTO(serverUrl() + '/memory/' + encodeURIComponent(id) + '?key=' + encodeURIComponent(secretKey()));
-      var data = await resp.json();
-      if (data && data.ok && data.item) return data.item;
-    } catch (e) { }
-    return null;
+      var f = await ghGetFile(GH_DATA_DIR + '/snap_' + id + '.json');
+      if (!f) return null;
+      return JSON.parse(f.content);
+    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端详情读取失败：', e); return null; }
   }
 
   async function cloudDelete(id) {
     if (!cloudConfigured()) return false;
     try {
-      var resp = await fetchTO(serverUrl() + '/memory/' + encodeURIComponent(id) + '?key=' + encodeURIComponent(secretKey()), { method: 'DELETE' });
-      var data = await resp.json();
-      return !!(data && data.ok);
-    } catch (e) { return false; }
+      var snapPath = GH_DATA_DIR + '/snap_' + id + '.json';
+      var f = await ghGetFile(snapPath);
+      if (f) await ghDeleteFile(snapPath, f.sha, '删除快照 ' + id);
+      var idxPath = GH_DATA_DIR + '/index.json';
+      var existing = await ghGetFile(idxPath);
+      if (existing) {
+        var list = [];
+        try { list = JSON.parse(existing.content); } catch (e) { }
+        list = (Array.isArray(list) ? list : []).filter(function (it) { return it.id !== id; });
+        await ghPutFile(idxPath, JSON.stringify(list), existing.sha, '删除索引项 ' + id);
+      }
+      return true;
+    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端删除失败：', e); return false; }
   }
 
   async function combinedList(excludeName) {
@@ -307,9 +364,10 @@
     el('ccm-panel-net').style.display = tab === 'net' ? '' : 'none';
     if (tab === 'pull') renderList(el('ccm-search') ? el('ccm-search').value : '');
     if (tab === 'net') {
-      if (el('ccm-cloud-url')) el('ccm-cloud-url').value = serverUrl();
-      if (el('ccm-cloud-key')) el('ccm-cloud-key').value = secretKey();
-      if (el('ccm-net-url') && !el('ccm-net-url').value) el('ccm-net-url').value = serverUrl() ? (serverUrl() + '/memory/list?key=' + secretKey()) : '';
+      if (el('ccm-cloud-token')) el('ccm-cloud-token').value = ghToken();
+      if (el('ccm-cloud-repo')) el('ccm-cloud-repo').value = ghRepo();
+      if (el('ccm-cloud-branch')) el('ccm-cloud-branch').value = ghBranch();
+      if (el('ccm-net-url') && !el('ccm-net-url').value) el('ccm-net-url').value = 'https://api.github.com';
     }
   }
 
@@ -353,8 +411,9 @@
         + "<div class='ccm-footer'>\u5feb\u7167\u4ec5\u4fdd\u5b58\u6587\u672c\u5185\u5bb9\uff0c\u4e0d\u542b\u56fe\u7247\uff1b\u5168\u5c40\u6700\u591a\u4fdd\u7559 " + MAX_SNAPS + " \u4efd\uff0c\u8d85\u51fa\u540e\u81ea\u52a8\u6e05\u7406\u6700\u65e9\u7684</div>"
         + "</div>"
         + "<div id='ccm-panel-net' style='display:none;'>"
-        + "<div class='ccm-section'><label class='ccm-label'>\u4e91\u7aef\u670d\u52a1\u5668\u5730\u5740 <small style='color:#7A7790;'>\uff08\u8981\u548c Tavo \u90a3\u8fb9\u586b\u7684\u5b8c\u5168\u4e00\u6837\uff0c\u624d\u80fd\u4e92\u901a\uff09</small></label><input class='ccm-input' id='ccm-cloud-url' placeholder='\u4f8b\u5982\uff1ahttps://xxx.workers.dev'></div>"
-        + "<div class='ccm-section'><label class='ccm-label'>\u5bc6\u94a5</label><input class='ccm-input' id='ccm-cloud-key' placeholder='\u548c Tavo \u90a3\u8fb9\u4e00\u6837\u7684\u5bc6\u94a5'></div>"
+        + "<div class='ccm-section'><label class='ccm-label'>GitHub Token <small style='color:#7A7790;'>\uff08Personal Access Token\uff0c\u52fe\u9009 repo \u6743\u9650\u90a3\u79cd\uff09</small></label><input class='ccm-input' id='ccm-cloud-token' placeholder='ghp_ \u5f00\u5934\u7684\u4e00\u957f\u4e32'></div>"
+        + "<div class='ccm-section'><label class='ccm-label'>\u4ed3\u5e93 <small style='color:#7A7790;'>\uff08\u683c\u5f0f\uff1a\u7528\u6237\u540d/\u4ed3\u5e93\u540d\uff0c\u8981\u548c Tavo \u90a3\u8fb9\u4e00\u6837\u624d\u80fd\u4e92\u901a\uff09</small></label><input class='ccm-input' id='ccm-cloud-repo' placeholder='\u4f8b\u5982\uff1acecelia940809/cross-role-memory-plugin'></div>"
+        + "<div class='ccm-section'><label class='ccm-label'>\u5206\u652f <small style='color:#7A7790;'>\uff08\u4e0d\u786e\u5b9a\u5c31\u586b main\uff09</small></label><input class='ccm-input' id='ccm-cloud-branch' placeholder='main'></div>"
         + "<button class='ccm-btn full' id='ccm-cloud-save-cfg'>\u4fdd\u5b58\u4e91\u540c\u6b65\u8bbe\u7f6e</button>"
         + "<div class='ccm-footer' style='margin-top:6px;'>\u4e0d\u586b\u7684\u8bdd\u63d2\u4ef6\u53ea\u5728\u672c\u8bbe\u5907\u672c\u5730\u4fdd\u5b58/\u8c03\u53d6\uff0c\u4e0d\u5f71\u54cd\u6b63\u5e38\u4f7f\u7528</div>"
         + "<hr style='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;'>"
@@ -396,13 +455,16 @@
       if (ok) { el('ccm-note').value = ''; }
     });
     el('ccm-cloud-save-cfg').addEventListener('click', async function () {
-      var url = el('ccm-cloud-url').value.trim().replace(/\/$/, '');
-      var key = el('ccm-cloud-key').value.trim();
-      cache[SERVER_URL_KEY] = url;
-      cache[SECRET_KEY_KEY] = key;
-      await pushG(SERVER_URL_KEY, url);
-      await pushG(SECRET_KEY_KEY, key);
-      showToast(url && key ? '云同步设置已保存' : '已清空云同步设置（只用本地存储）');
+      var token = el('ccm-cloud-token').value.trim();
+      var repo = el('ccm-cloud-repo').value.trim().replace(/^\/|\/$/g, '');
+      var branch = el('ccm-cloud-branch').value.trim() || 'main';
+      cache[GH_TOKEN_KEY] = token;
+      cache[GH_REPO_KEY] = repo;
+      cache[GH_BRANCH_KEY] = branch;
+      await pushG(GH_TOKEN_KEY, token);
+      await pushG(GH_REPO_KEY, repo);
+      await pushG(GH_BRANCH_KEY, branch);
+      showToast(token && repo ? '云同步设置已保存' : '已清空云同步设置（只用本地存储）');
     });
     el('ccm-net-test').addEventListener('click', async function () {
       var url = el('ccm-net-url').value.trim();
