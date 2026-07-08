@@ -1,0 +1,1 @@
+{"id":268,"name":"用户变量宏测试","entries":[{"identifier":"2d2cb079-ea3a-4bcd-a659-e45bd5802ff6","name":"测试","findRegex":"\\s*\\[好感度\\s+([+-]\\d+)\\]","replaceString":"{{addvar::测试::$1}}","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
