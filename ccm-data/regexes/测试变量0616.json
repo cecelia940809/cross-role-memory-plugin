@@ -1,0 +1,1 @@
+{"id":266,"name":"测试变量0616","entries":[{"identifier":"b7689d2f-3f90-47a2-b303-0aac43278214","name":"测试","findRegex":"好感度","replaceString":"{{addvar::bar2_<%- characterId %>::5}}","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
