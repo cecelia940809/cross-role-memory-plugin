@@ -1,0 +1,1 @@
+{"id":261,"name":"故事弧节奏注入","entries":[{"identifier":"d0b4450d-0c14-4903-84d9-5d25f181825b","name":"故事弧节奏注入","findRegex":"([\\s\\S]*)","replaceString":"$1","trimStrings":[],"placements":["char"],"timing":"receive","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
