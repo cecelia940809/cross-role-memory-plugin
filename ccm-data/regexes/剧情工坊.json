@@ -1,0 +1,1 @@
+{"id":99,"name":"剧情工坊","entries":[{"identifier":"c1fc7987-123e-4f70-b8bf-491038d91fc0","name":"剧情工坊","findRegex":"/【开场简介】/s","replaceString":"","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
