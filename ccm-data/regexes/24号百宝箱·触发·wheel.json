@@ -1,0 +1,1 @@
+{"id":107,"name":"24号百宝箱·触发·wheel","entries":[{"identifier":"151ceb8b-1160-4772-aba7-3b322cfc25ce","name":"24号百宝箱·幸运转盘","findRegex":"/\\/toolbox-wheel(?:[\\s\\S]*?```html)?/s","replaceString":"```html\n\n```","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
