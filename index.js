@@ -27,6 +27,30 @@
     function findByNameOrId(list, value){
       value = String(value || '');
       return (list || []).filter(function(it){ return String(it.id) === value || String(it.name) === value; });
+    }    function stHeaders(opts){
+      opts = opts || {};
+      try { var c = stContext(); if (c && typeof c.getRequestHeaders === 'function') return c.getRequestHeaders(opts); } catch(e){}
+      try { if (typeof getRequestHeaders === 'function') return getRequestHeaders(opts); } catch(e2){}
+      return opts.omitContentType ? {} : { 'Content-Type': 'application/json' };
+    }
+    async function stJsonPost(url, payload){
+      var resp = await fetch(url, {
+        method: 'POST',
+        headers: stHeaders(),
+        body: JSON.stringify(payload || {}),
+        cache: 'no-cache'
+      });
+      if (!resp.ok) throw new Error('ST API ' + url + ' failed: ' + resp.status);
+      return await resp.json();
+    }
+    function normalizeSTWorld(obj){
+      obj = obj || {};
+      var name = obj.name || obj.id || 'Imported Lorebook';
+      var data = Object.assign({}, obj);
+      delete data.id;
+      data.name = name;
+      if (!data.entries) data.entries = {};
+      return { name: String(name), data: data };
     }
     var TV = {
       get: async function(k, scope){
@@ -81,11 +105,48 @@
         update: async function(){ throw new Error('ST 正则更新暂未接入'); }
       },
       lorebook: {
-        all: async function(){ try { var names = window.world_names || (stContext() && stContext().world_names); return Array.isArray(names) ? names.map(function(n){ return { id:String(n), name:String(n), _raw:{ name:String(n) } }; }) : null; } catch(e){ return null; } },
-        get: async function(id){ return { id:String(id), name:String(id) }; },
-        find: async function(name){ return findByNameOrId(await TV.lorebook.all(), name); },
-        create: async function(){ throw new Error('ST 世界书导入暂未接入'); },
-        update: async function(){ throw new Error('ST 世界书更新暂未接入'); }
+        all: async function(){
+          try {
+            var list = await stJsonPost('/api/worldinfo/list', {});
+            return Array.isArray(list) ? list.map(function(it, idx){
+              var id = it.file_id || it.name || ('world_' + idx);
+              var name = it.name || it.file_id || id;
+              return { id:String(id), name:String(name), entries: it.entries || '', _raw: it };
+            }) : [];
+          } catch(e){ console.error('[跨端同步库 ST] 读取世界书列表失败：', e); return null; }
+        },
+        get: async function(id){
+          try {
+            var data = await stJsonPost('/api/worldinfo/get', { name: String(id) });
+            if (!data) return null;
+            data.id = String(id);
+            if (!data.name) data.name = String(id);
+            return data;
+          } catch(e){ console.error('[跨端同步库 ST] 读取世界书失败：', e); return null; }
+        },
+        find: async function(name, options){
+          var list = await TV.lorebook.all();
+          if (!Array.isArray(list)) return [];
+          var match = options && options.match || 'exact';
+          var q = String(name || '').toLowerCase();
+          return list.filter(function(it){
+            var n = String(it.name || '').toLowerCase();
+            if (match === 'contains') return n.indexOf(q) !== -1;
+            if (match === 'prefix') return n.indexOf(q) === 0;
+            if (match === 'suffix') return n.slice(-q.length) === q;
+            return n === q;
+          });
+        },
+        create: async function(obj){
+          var w = normalizeSTWorld(obj);
+          await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
+          return w.name;
+        },
+        update: async function(obj){
+          var w = normalizeSTWorld(obj);
+          await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
+          return w.name;
+        }
       }
     };
 
