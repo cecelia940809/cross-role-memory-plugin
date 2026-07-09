@@ -78,14 +78,28 @@
           var from = Math.max(0, Number(range && range[0]) || 0);
           var to = Math.min(chat.length - 1, Number(range && range[1]) || chat.length - 1);
           return chat.slice(from, to + 1).map(function(m){
-            return { role: m && m.is_user ? 'user' : 'char', content: (m && (m.mes || m.message || m.content)) || '', time: (m && m.send_date && Date.parse(m.send_date)) || Date.now() };
+            m = m || {};
+            var content = (m.mes || m.message || m.content || '');
+            return {
+              role: m.is_user ? 'user' : (m.is_system ? 'system' : 'char'),
+              content: content,
+              time: (m.send_date && Date.parse(m.send_date)) || Date.now(),
+              name: m.name || (m.is_user ? 'User' : stCurrentCharName()),
+              is_user: !!m.is_user,
+              is_system: !!m.is_system,
+              original_avatar: m.original_avatar || m.avatar || '',
+              extra: (m.extra && typeof m.extra === 'object') ? m.extra : {}
+            };
           }).filter(function(m){ return m.content; });
         }
       },
       chat: { current: async function(){ return { characters: [{ name: stCurrentCharName() }] }; } },
       utils: {
         export: async function(filename, b64){
-          var text = decodeURIComponent(escape(atob(String(b64).split('\n').join(''))));
+          var bin = atob(String(b64).replace(/\s+/g, ''));
+          var bytes = new Uint8Array(bin.length);
+          for (var i=0; i<bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          var text = (typeof TextDecoder !== 'undefined') ? new TextDecoder('utf-8').decode(bytes) : decodeURIComponent(escape(bin));
           var blob = new Blob([text], { type:'application/jsonl;charset=utf-8' });
           var a = D.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename || 'export.jsonl'; D.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
         }
@@ -333,27 +347,41 @@
 
     // 把内部快照结构 {meta, messages} 拼成 jsonl 文本
     function buildChatlogJsonl(meta, messages){
+      meta = meta || {};
+      messages = Array.isArray(messages) ? messages : [];
+      var vars = Object.assign({}, (meta.chat_metadata && meta.chat_metadata.variables) || meta.variables || {});
+      if (meta.charName && !vars.ccm_my_name) vars.ccm_my_name = meta.charName;
+      var chatMeta = { variables: vars };
+      if (meta.note) chatMeta.note = meta.note;
+      if (meta.savedAt) chatMeta.savedAt = meta.savedAt;
+      chatMeta.msgCount = meta.msgCount || messages.length;
+      chatMeta.platform = meta.platform || PLATFORM;
       var lines = [];
       lines.push(JSON.stringify({
-        user_name: 'User',
+        user_name: meta.userName || 'User',
         character_name: meta.charName || '',
         create_date: fmtCreateDate(meta.savedAt),
-        chat_metadata: { note: meta.note || '', savedAt: meta.savedAt, msgCount: meta.msgCount, platform: meta.platform || PLATFORM }
+        chat_metadata: chatMeta
       }));
       messages.forEach(function(m){
-        var isUser = m.role === 'user';
+        m = m || {};
+        var raw = m.raw && typeof m.raw === 'object' ? m.raw : {};
+        var isUser = (typeof m.is_user === 'boolean') ? m.is_user : ((typeof raw.is_user === 'boolean') ? raw.is_user : m.role === 'user');
+        var isSystem = (typeof m.is_system === 'boolean') ? m.is_system : ((typeof raw.is_system === 'boolean') ? raw.is_system : m.role === 'system');
+        var extra = (m.extra && typeof m.extra === 'object') ? m.extra : ((raw.extra && typeof raw.extra === 'object') ? raw.extra : {});
         lines.push(JSON.stringify({
-          name: isUser ? 'User' : (meta.charName || ''),
-          is_user: isUser,
-          is_system: false,
+          name: m.name || raw.name || (isUser ? (meta.userName || 'User') : (meta.charName || '')),
+          is_user: !!isUser,
+          is_system: !!isSystem,
           send_date: fmtSendDate(m.time || meta.savedAt),
-          mes: String(m.content || '')
+          mes: String(m.content != null ? m.content : (raw.mes || raw.message || raw.content || '')),
+          original_avatar: m.original_avatar || raw.original_avatar || '',
+          extra: extra
         }));
       });
       return lines.join('\n');
     }
 
-    // 反过来，把 jsonl 文本解析回 {meta, messages}，供"带入当前对话框"等内部逻辑使用
     function parseChatlogJsonl(text){
       var lines = String(text||'').split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
       if (!lines.length) return null;
@@ -362,9 +390,27 @@
       var messages = [];
       for (var i=1;i<lines.length;i++){
         var obj; try { obj = JSON.parse(lines[i]); } catch(e){ continue; }
-        messages.push({ role: obj.is_user ? 'user' : 'char', content: obj.mes || '', time: parseSendDateMs(obj.send_date) || cm.savedAt });
+        messages.push({
+          role: obj.is_user ? 'user' : (obj.is_system ? 'system' : 'char'),
+          content: obj.mes || obj.message || obj.content || '',
+          time: parseSendDateMs(obj.send_date) || cm.savedAt,
+          name: obj.name || '',
+          is_user: !!obj.is_user,
+          is_system: !!obj.is_system,
+          original_avatar: obj.original_avatar || '',
+          extra: (obj.extra && typeof obj.extra === 'object') ? obj.extra : {},
+          raw: obj
+        });
       }
-      var meta = { charName: head.character_name || '', savedAt: cm.savedAt || Date.now(), msgCount: cm.msgCount || messages.length, note: cm.note || '', platform: cm.platform || 'unknown' };
+      var meta = {
+        charName: head.character_name || '',
+        savedAt: cm.savedAt || Date.now(),
+        msgCount: cm.msgCount || messages.length,
+        note: cm.note || '',
+        platform: cm.platform || 'unknown',
+        variables: (cm.variables && typeof cm.variables === 'object') ? cm.variables : {},
+        chat_metadata: cm
+      };
       return { meta: meta, messages: messages };
     }
 
@@ -640,7 +686,18 @@
       var msgs = await recentMsgs(MAX_MSG_PER_SNAP);
       if (!msgs.length) { showToast('当前没有可保存的对话内容'); return false; }
       var simplified = msgs.map(function(m){
-        return { role: m.role, content: String(m.content||'').slice(0, 2000), time: m.time || Date.now() };
+        m = m || {};
+        var item = {
+          role: m.role,
+          content: String(m.content || ''),
+          time: m.time || Date.now(),
+          name: m.name || '',
+          is_user: typeof m.is_user === 'boolean' ? m.is_user : m.role === 'user',
+          is_system: typeof m.is_system === 'boolean' ? m.is_system : m.role === 'system',
+          original_avatar: m.original_avatar || '',
+          extra: (m.extra && typeof m.extra === 'object') ? m.extra : {}
+        };
+        return item;
       });
       var id = uid();
       var entry = { id: id, charName: name, savedAt: Date.now(), msgCount: simplified.length, note: note || '' };
