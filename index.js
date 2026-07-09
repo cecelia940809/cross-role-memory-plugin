@@ -1,5 +1,5 @@
 // ============================================
-// 跨角色记忆调取插件 - SillyTavern 正规扩展版
+// 跨端同步库调取插件 - SillyTavern 正规扩展版
 // 装法见仓库 README，需要通过"扩展 -> 安装扩展"粘贴仓库地址来装
 // ============================================
 
@@ -14,7 +14,7 @@
   var GH_REPO_KEY = 'ccm_gh_repo';
   var GH_BRANCH_KEY = 'ccm_gh_branch';
   var GH_DATA_DIR = 'ccm-data';
-  var MAX_SNAPS = 30;
+  var MAX_SNAPS = 100;
   var MAX_MSG_PER_SNAP = 40;
   var LS_PREFIX = 'ccm_st_';
   var SEP = '◈';
@@ -97,24 +97,31 @@
     return resp.ok;
   }
 
+  var PLATFORM = 'st';
+  function convPath(platform, id){ return GH_DATA_DIR + '/' + platform + '/conversations/snap_' + id + '.json'; }
+
   async function cloudSave(meta, messages) {
     if (!cloudConfigured()) return false;
     try {
-      var snapPath = GH_DATA_DIR + '/snap_' + meta.id + '.json';
-      var payload = JSON.stringify({ meta: { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: 'st' }, messages: messages });
-      await ghPutFile(snapPath, payload, undefined, '保存对话快照 ' + meta.id);
+      var snapPath = convPath(PLATFORM, meta.id);
+      var payload = JSON.stringify({ meta: { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM }, messages: messages });
+      var existingSnap = null;
+      try { existingSnap = await ghGetFile(snapPath); } catch (e) { }
+      await ghPutFile(snapPath, payload, existingSnap ? existingSnap.sha : undefined, '保存对话快照 ' + meta.id);
 
       var idxPath = GH_DATA_DIR + '/index.json';
       var existing = null;
       try { existing = await ghGetFile(idxPath); } catch (e) { }
       var list = [];
       if (existing) { try { list = JSON.parse(existing.content); if (!Array.isArray(list)) list = []; } catch (e) { list = []; } }
-      list.unshift({ id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: 'st' });
+      var pos = list.findIndex(function (it) { return it.id === meta.id; });
+      var entry = { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM };
+      if (pos !== -1) { list[pos] = entry; } else { list.unshift(entry); }
       if (list.length > 200) list = list.slice(0, 200);
       await ghPutFile(idxPath, JSON.stringify(list), existing ? existing.sha : undefined, '更新索引');
       return true;
     } catch (e) {
-      console.error('[跨角色记忆 ST扩展] 云端保存失败：', e);
+      console.error('[跨端同步库 ST] 云端保存失败：', e);
       return false;
     }
   }
@@ -129,22 +136,22 @@
       if (!Array.isArray(list)) return [];
       return list.filter(function (it) { return !excludeName || it.charName !== excludeName; })
         .map(function (it) { return { id: it.id, charName: it.charName, savedAt: it.savedAt, msgCount: it.msgCount, note: it.note || '', source: 'cloud', platform: it.platform || 'unknown' }; });
-    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端列表读取失败：', e); return []; }
+    } catch (e) { console.error('[跨端同步库 ST] 云端列表读取失败：', e); return []; }
   }
 
-  async function cloudFetchItem(id) {
+  async function cloudFetchItem(id, platform) {
     if (!cloudConfigured()) return null;
     try {
-      var f = await ghGetFile(GH_DATA_DIR + '/snap_' + id + '.json');
+      var f = await ghGetFile(convPath(platform || PLATFORM, id));
       if (!f) return null;
       return JSON.parse(f.content);
-    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端详情读取失败：', e); return null; }
+    } catch (e) { console.error('[跨端同步库 ST] 云端详情读取失败：', e); return null; }
   }
 
-  async function cloudDelete(id) {
+  async function cloudDelete(id, platform) {
     if (!cloudConfigured()) return false;
     try {
-      var snapPath = GH_DATA_DIR + '/snap_' + id + '.json';
+      var snapPath = convPath(platform || PLATFORM, id);
       var f = await ghGetFile(snapPath);
       if (f) await ghDeleteFile(snapPath, f.sha, '删除快照 ' + id);
       var idxPath = GH_DATA_DIR + '/index.json';
@@ -156,15 +163,15 @@
         await ghPutFile(idxPath, JSON.stringify(list), existing.sha, '删除索引项 ' + id);
       }
       return true;
-    } catch (e) { console.error('[跨角色记忆 ST扩展] 云端删除失败：', e); return false; }
+    } catch (e) { console.error('[跨端同步库 ST] 云端删除失败：', e); return false; }
   }
 
   async function combinedList(excludeName) {
-    var local = idx().filter(function (e) { return e.charName !== excludeName; }).map(function (e) {
+    var local = idx().map(function (e) {
       return { id: e.id, charName: e.charName, savedAt: e.savedAt, msgCount: e.msgCount, note: e.note || '', source: 'local', platform: 'st' };
     });
     var cloud = [];
-    try { cloud = await cloudList(excludeName); } catch (e) { cloud = []; }
+    try { cloud = await cloudList(); } catch (e) { cloud = []; }
     var merged = cloud.slice();
     local.forEach(function (le) {
       var dup = cloud.some(function (ce) { return ce.charName === le.charName && ce.savedAt === le.savedAt && ce.msgCount === le.msgCount; });
@@ -224,7 +231,7 @@
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       var snap = null;
-      if (it.source === 'cloud') { snap = await cloudFetchItem(it.id); }
+      if (it.source === 'cloud') { snap = await cloudFetchItem(it.id, it.platform); }
       else { snap = await pullG(SNAP_PREFIX + it.id); }
       if (!snap || !snap.messages) continue;
       var meta = snap.meta || {};
@@ -329,12 +336,12 @@
       var platformTag = e.platform === 'st' ? 'ST' : (e.platform === 'tavo' ? 'Tavo' : (e.platform || ''));
       html += "<div class='ccm-list-item'>"
         + "<div class='ccm-item-head'>"
-        + "<input type='checkbox' class='ccm-pick' data-id='" + e.id + "' data-source='" + e.source + "'>"
+        + "<input type='checkbox' class='ccm-pick' data-id='" + e.id + "' data-source='" + e.source + "' data-platform='" + (e.platform||'') + "'>"
         + "<div class='ccm-item-name'>" + esc(e.charName) + "</div>"
         + "<div class='ccm-item-time'>" + esc(fmtTime(e.savedAt)) + " · " + e.msgCount + "条" + (platformTag ? ' · ' + esc(platformTag) : '') + "</div>"
         + "</div>"
         + (e.note ? "<div class='ccm-item-note'>" + esc(e.note) + "</div>" : '')
-        + "<div class='ccm-item-actions'><button class='ccm-btn small outline ccm-del' data-id='" + e.id + "' data-source='" + e.source + "'>删除</button></div>"
+        + "<div class='ccm-item-actions'><button class='ccm-btn small outline ccm-del' data-id='" + e.id + "' data-source='" + e.source + "' data-platform='" + (e.platform||'') + "'>删除</button></div>"
         + "</div>";
     });
     box.innerHTML = html;
@@ -342,8 +349,9 @@
       btn.addEventListener('click', async function () {
         var id = this.getAttribute('data-id');
         var source = this.getAttribute('data-source');
+        var platform = this.getAttribute('data-platform');
         if (source === 'cloud') {
-          var ok = await cloudDelete(id);
+          var ok = await cloudDelete(id, platform);
           showToast(ok ? '已从云端删除' : '云端删除失败');
         } else {
           await deleteSnapshot(id);
@@ -436,7 +444,7 @@
     el('ccm-search').addEventListener('input', function () { renderList(this.value); });
     el('ccm-bring').addEventListener('click', function () {
       var items = Array.prototype.slice.call(D.querySelectorAll('.ccm-pick:checked')).map(function (c) {
-        return { id: c.getAttribute('data-id'), source: c.getAttribute('data-source') };
+        return { id: c.getAttribute('data-id'), source: c.getAttribute('data-source'), platform: c.getAttribute('data-platform') };
       });
       bringIntoInput(items);
     });
@@ -522,7 +530,7 @@
     }
     build();
     setInterval(build, 3000); // FAB 自愈：防止页面切换/重渲染把悬浮按钮清掉后不再出现
-    console.log('[跨角色记忆 ST扩展] 已启动');
+    console.log('[跨端同步库 ST] 已启动');
   }
 
   // 第三方扩展的标准自启动写法
