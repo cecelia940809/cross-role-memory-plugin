@@ -630,7 +630,7 @@
     }
 
     function fmtTime(ms){ try{ return new Date(ms).toLocaleString(); }catch(e){ return ''; } }
-    function esc(s){ return String(s==null?'':s).replace(/</g,'&lt;'); }
+    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
     function uid(){ return 'x'+Date.now()+'_'+Math.floor(Math.random()*100000); }
 
     // ===== 保存当前角色对话为快照，写入全局索引 =====
@@ -939,6 +939,7 @@
       }
       if (gen === assetPanelGen) {
         box.textContent = '完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : '');
+        await sleep(1200);
         refreshAssetPanel();
       }
       showToast(ASSET_KINDS[kind].label + '一键推送完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : ''));
@@ -1308,7 +1309,11 @@
           if (success) ok++; else fail++;
           await sleep(200);
         }
-        if (gen === assetPanelGen) { box.textContent = '完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : ''); refreshAssetPanel(); }
+        if (gen === assetPanelGen) {
+          box.textContent = '完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : '');
+          await sleep(1200);
+          refreshAssetPanel();
+        }
         showToast(ASSET_KINDS[kind].label + '推送完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : ''));
       });
       el('ccm-asset-push-all-kind').addEventListener('click', function(){ pushAllOfKind(currentAssetKind); });
