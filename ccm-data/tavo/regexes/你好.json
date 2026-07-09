@@ -1,0 +1,1 @@
+{"id":115,"name":"你好","entries":[{"identifier":"321f14fc-72b4-4b63-a923-3cd043478d14","name":"测试","findRegex":"你好","replaceString":"Hello","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
