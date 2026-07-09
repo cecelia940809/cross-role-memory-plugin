@@ -1,1 +1,12 @@
-{"display_name":"\u8de8\u7aef\u540c\u6b65\u5e93","loading_order":100,"requires":[],"optional":[],"dependencies":[],"js":"index.js","author":"Cecelia","version":"1.1.2","homePage":"","auto_update":false}
+{
+  "display_name": "跨端同步库",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "dependencies": [],
+  "js": "index.js",
+  "author": "Cecelia",
+  "version": "1.1.3",
+  "homePage": "",
+  "auto_update": false
+}
