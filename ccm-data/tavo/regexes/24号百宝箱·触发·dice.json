@@ -1,1 +1,0 @@
-{"id":105,"name":"24号百宝箱·触发·dice","entries":[{"identifier":"162ecf82-40dc-41ed-bb6a-b41abc8fe664","name":"24号百宝箱·摇骰子","findRegex":"/\\/toolbox-dice(?:[\\s\\S]*?```html)?/s","replaceString":"```html\n\n```","trimStrings":[],"placements":["char"],"timing":"display","substitution":"none","minDepth":null,"maxDepth":null,"enabled":true}]}
