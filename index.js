@@ -919,6 +919,7 @@
         .ccm-item-note { font-size:11px; color:#B8B5C8; margin-top:4px; }
         .ccm-item-actions { display:flex; justify-content:flex-end; margin-top:6px; }
         .ccm-empty { text-align:center; color:#7A7790; font-size:12px; padding:24px 0; }
+        .ccm-overview-item { user-select:none; -webkit-user-select:none; touch-action:manipulation; }
         .ccm-toast { position:fixed; bottom:40px; left:50%; transform:translateX(-50%); background:#2A2A38; color:#fff; padding:8px 16px; border-radius:24px; font-size:12px; font-weight:700; box-shadow:0 8px 24px rgba(0,0,0,0.3); z-index:2147483651; opacity:0; transition:opacity 0.3s; pointer-events:none; }
         .ccm-toast.show { opacity:1; }
         .ccm-footer { text-align:center; font-size:10px; color:#6A6780; margin-top:auto; padding-top:8px; flex:none; }
@@ -1172,6 +1173,45 @@
       }, 1600);
     }
 
+    var lastOverviewActivateAt = 0;
+    function activateOverviewItem(item){
+      if (!item) return;
+      locateCloudOverviewItem(
+        item.getAttribute('data-kind'),
+        item.getAttribute('data-id') || '',
+        item.getAttribute('data-platform') || '',
+        item.getAttribute('data-path') || '',
+        item.getAttribute('data-name') || ''
+      );
+    }
+
+    function bindOverviewDelegates(box){
+      if (!box || box.__ccmOverviewDelegatesBound) return;
+      box.__ccmOverviewDelegatesBound = true;
+      var handler = function(e){
+        var target = e.target;
+        if (!target || !target.closest) return;
+        var jump = target.closest('.ccm-overview-jump');
+        if (jump && box.contains(jump)) {
+          e.preventDefault();
+          e.stopPropagation();
+          switchTab(jump.getAttribute('data-tab'));
+          return;
+        }
+        var item = target.closest('.ccm-overview-item');
+        if (!item || !box.contains(item)) return;
+        var now = Date.now();
+        if (e.type === 'click' && now - lastOverviewActivateAt < 450) return;
+        lastOverviewActivateAt = now;
+        e.preventDefault();
+        e.stopPropagation();
+        activateOverviewItem(item);
+      };
+      ['pointerup','touchend','click'].forEach(function(type){
+        box.addEventListener(type, handler, true);
+      });
+    }
+
     function locateCloudOverviewItem(kind, id, platform, path, name){
       var tab = kind === 'conv' ? 'conv' : kind;
       switchTab(tab);
@@ -1268,24 +1308,7 @@
             if (arrow) arrow.textContent = isHidden ? '▼' : '▶';
           });
         });
-        box.querySelectorAll('.ccm-overview-jump').forEach(function(btn){
-          btn.addEventListener('click', function(e){
-            e.stopPropagation(); // ????"???"????????????/??
-            switchTab(this.getAttribute('data-tab'));
-          });
-        });
-        box.querySelectorAll('.ccm-overview-item').forEach(function(item){
-          item.addEventListener('click', function(e){
-            e.stopPropagation();
-            locateCloudOverviewItem(
-              this.getAttribute('data-kind'),
-              this.getAttribute('data-id') || '',
-              this.getAttribute('data-platform') || '',
-              this.getAttribute('data-path') || '',
-              this.getAttribute('data-name') || ''
-            );
-          });
-        });
+        bindOverviewDelegates(box);
       } catch(e){
         box.innerHTML = "<div class='ccm-empty'>加载失败：" + esc(e && e.message ? e.message : String(e)) + "</div>";
       }
