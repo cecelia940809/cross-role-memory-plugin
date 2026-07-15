@@ -1114,6 +1114,55 @@
     // ===== "云端总览"标签：一级按平台文件夹分（📁 Tavo / 📁 SillyTavern），
     // 二级在每个平台文件夹里再分对话记录/角色卡/正则/世界书四类，只读浏览 + "去操作"跳转按钮。
     // 平台和分类两级都可以点标题折叠/展开——分类默认收起（内容量最大的地方），平台默认展开。=====
+    function flashLocatedItem(node){
+      if (!node || !node.style) return;
+      var oldBoxShadow = node.style.boxShadow;
+      var oldOutline = node.style.outline;
+      node.style.boxShadow = '0 0 0 2px rgba(111,92,230,0.85), 0 0 18px rgba(111,92,230,0.35)';
+      node.style.outline = 'none';
+      setTimeout(function(){
+        node.style.boxShadow = oldBoxShadow;
+        node.style.outline = oldOutline;
+      }, 1600);
+    }
+
+    function locateCloudOverviewItem(kind, id, platform, path, name){
+      var tab = kind === 'conv' ? 'conv' : kind;
+      switchTab(tab);
+      var attempts = 0;
+      (function waitForList(){
+        attempts++;
+        var hit = null;
+        if (kind === 'conv') {
+          Array.prototype.slice.call(D.querySelectorAll('.ccm-pick')).some(function(c){
+            var ok = c.getAttribute('data-id') === id
+              && c.getAttribute('data-source') === 'cloud'
+              && (!platform || c.getAttribute('data-platform') === platform);
+            if (ok) hit = c;
+            return ok;
+          });
+          if (hit) Array.prototype.slice.call(D.querySelectorAll('.ccm-pick')).forEach(function(c){ c.checked = false; });
+        } else {
+          Array.prototype.slice.call(D.querySelectorAll('.ccm-asset-cloud-pick')).some(function(c){
+            var ok = c.value === path;
+            if (ok) hit = c;
+            return ok;
+          });
+          if (hit) Array.prototype.slice.call(D.querySelectorAll('.ccm-asset-cloud-pick')).forEach(function(c){ c.checked = false; });
+        }
+        if (hit) {
+          hit.checked = true;
+          var item = hit.closest ? (hit.closest('.ccm-list-item') || hit.closest('label')) : hit.parentElement;
+          if (item && item.scrollIntoView) item.scrollIntoView({ block:'center', behavior:'smooth' });
+          flashLocatedItem(item || hit);
+          showToast('???????' + (name || '????'));
+          return;
+        }
+        if (attempts < 25) { setTimeout(waitForList, 200); return; }
+        showToast('?????????????????');
+      })();
+    }
+
     async function refreshOverview(){
       var box = el('ccm-overview-body');
       if (!box) return;
@@ -1152,7 +1201,10 @@
               + "</div></div>"
               + "<div id='"+cBodyId+"' style='display:none;'>";
             filtered.forEach(function(it){
-              html += "<div class='ccm-list-item' style='margin-bottom:6px;'><div class='ccm-item-head'><div class='ccm-item-name'>"+esc(c.nameOf(it))+"</div>"
+              var itemId = c.key === 'conv' ? (it.id || '') : '';
+              var itemPath = c.key === 'conv' ? '' : (it.path || '');
+              var itemName = c.nameOf(it) || '';
+              html += "<div class='ccm-list-item ccm-overview-item' data-kind='"+esc(c.key)+"' data-id='"+esc(itemId)+"' data-platform='"+esc(it.platform||'')+"' data-path='"+esc(itemPath)+"' data-name='"+esc(itemName)+"' title='???????' style='margin-bottom:6px;cursor:pointer;'><div class='ccm-item-head'><div class='ccm-item-name'>"+esc(itemName)+"</div>"
                 + (c.timeOf(it) ? "<div class='ccm-item-time'>"+esc(c.timeOf(it))+"</div>" : '') + "</div></div>";
             });
             html += "</div>";
@@ -1172,8 +1224,20 @@
         });
         box.querySelectorAll('.ccm-overview-jump').forEach(function(btn){
           btn.addEventListener('click', function(e){
-            e.stopPropagation(); // 别让点击"去操作"也顺带触发外层标题的展开/折叠
+            e.stopPropagation(); // ????"???"????????????/??
             switchTab(this.getAttribute('data-tab'));
+          });
+        });
+        box.querySelectorAll('.ccm-overview-item').forEach(function(item){
+          item.addEventListener('click', function(e){
+            e.stopPropagation();
+            locateCloudOverviewItem(
+              this.getAttribute('data-kind'),
+              this.getAttribute('data-id') || '',
+              this.getAttribute('data-platform') || '',
+              this.getAttribute('data-path') || '',
+              this.getAttribute('data-name') || ''
+            );
           });
         });
       } catch(e){
@@ -1315,7 +1379,7 @@
               </div>
               <div class='ccm-section'>
                 <label class='ccm-label'>仓库 <small style='color:#7A7790;'>（格式：用户名/仓库名）</small></label>
-                <input class='ccm-input' id='ccm-cloud-repo' placeholder='例如：cecelia940809/cross-role-memory-plugin'>
+                <input class='ccm-input' id='ccm-cloud-repo' placeholder='例如：your-name/your-sync-repo'>
               </div>
               <div class='ccm-section'>
                 <label class='ccm-label'>分支 <small style='color:#7A7790;'>（不确定就填 main）</small></label>
