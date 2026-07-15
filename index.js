@@ -227,7 +227,7 @@
     var PLATFORM_LABEL = { tavo: 'Tavo', st: 'SillyTavern' };
 
     function fetchTO(url, opts, ms){
-      ms = ms || 8000;
+      ms = ms || 20000;
       return new Promise(function(resolve, reject){
         var done = false;
         var timer = setTimeout(function(){ if(!done){ done=true; reject(new Error('请求超时')); } }, ms);
@@ -252,7 +252,7 @@
         catch(e){
           lastErr = e;
           var msg = String((e && e.message) || e);
-          var retryable = /403|5\d\d|超时|timeout|network|fetch/i.test(msg);
+          var retryable = /403|409|422|5\d\d|超时|timeout|network|fetch/i.test(msg);
           if (!retryable || i === tries - 1) throw e;
           await sleep(500 * Math.pow(2, i)); // 500ms → 1000ms → 2000ms
         }
@@ -285,19 +285,23 @@
       return await withRetry(async function(){
         var body = { message: message || ('update ' + path), content: b64encode(content), branch: ghBranch() };
         if (sha) body.sha = sha;
-        var resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
-        if (resp.status === 409 && sha) {
-          // 冲突：可能是别的设备同时也在写索引文件，重新拿一次最新 sha 再试一次
+        var resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) }, 30000);
+        if (resp.status === 409 || resp.status === 422) {
+          // Conflict or validation after a slow previous write: fetch newest sha and retry once.
           var latest = await ghGetFile(path);
           if (latest) {
             body.sha = latest.sha;
-            resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+            resp = await fetchTO(ghUrl(path), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) }, 30000);
           }
         }
-        if (!resp.ok) throw new Error('GitHub 写入失败：' + resp.status);
+        if (!resp.ok) {
+          var detail = '';
+          try { detail = await resp.text(); } catch(e){}
+          throw new Error('GitHub write failed: ' + resp.status + (detail ? (' ' + detail.slice(0, 160)) : ''));
+        }
         var data = await resp.json();
         return data.content ? data.content.sha : undefined;
-      });
+      }, 4);
     }
 
     async function ghDeleteFile(path, sha, message){
@@ -414,25 +418,67 @@
       return { meta: meta, messages: messages };
     }
 
-    async function cloudSave(meta, messages){
-      if (!cloudConfigured()) return false;
-      try {
-        var snapPath = convPath(PLATFORM, meta.id);
-        var payload = buildChatlogJsonl({ charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM }, messages);
-        var existingSnap = null;
-        try { existingSnap = await ghGetFile(snapPath); } catch(e){}
-        await ghPutFile(snapPath, payload, existingSnap ? existingSnap.sha : undefined, '保存对话快照 ' + meta.id);
+    function mergeCloudIndexEntry(list, entry){
+      list = Array.isArray(list) ? list : [];
+      var merged = list.filter(function(it){ return it && it.id !== entry.id; });
+      merged.unshift(entry);
+      if (merged.length > 200) merged = merged.slice(0, 200);
+      return merged;
+    }
 
+    async function cloudIndexHas(entry){
+      try {
+        var f = await ghGetFile(GH_DATA_DIR + '/index.json');
+        if (!f) return false;
+        var list = JSON.parse(f.content);
+        if (!Array.isArray(list)) return false;
+        return list.some(function(it){ return it && it.id === entry.id && (it.platform || PLATFORM) === PLATFORM; });
+      } catch(e){ return false; }
+    }
+
+    async function cloudUpsertIndex(entry){
+      return await withRetry(async function(){
         var idxPath = GH_DATA_DIR + '/index.json';
         var existing = null;
         try { existing = await ghGetFile(idxPath); } catch(e){}
         var list = [];
         if (existing) { try { list = JSON.parse(existing.content); if (!Array.isArray(list)) list = []; } catch(e){ list = []; } }
-        var pos = list.findIndex(function(it){ return it.id === meta.id; });
-        var entry = { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM };
-        if (pos !== -1) { list[pos] = entry; } else { list.unshift(entry); }
-        if (list.length > 200) list = list.slice(0, 200);
-        await ghPutFile(idxPath, JSON.stringify(list), existing ? existing.sha : undefined, '更新索引');
+        var merged = mergeCloudIndexEntry(list, entry);
+        await ghPutFile(idxPath, JSON.stringify(merged), existing ? existing.sha : undefined, 'update index');
+        return true;
+      }, 4);
+    }
+
+    async function cloudSave(meta, messages){
+      if (!cloudConfigured()) return false;
+      var snapPath = convPath(PLATFORM, meta.id);
+      var entry = { id: meta.id, charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM };
+      try {
+        var payload = buildChatlogJsonl({ charName: meta.charName, savedAt: meta.savedAt, msgCount: meta.msgCount, note: meta.note || '', platform: PLATFORM }, messages);
+        var existingSnap = null;
+        try { existingSnap = await ghGetFile(snapPath); } catch(e){}
+        try {
+          await ghPutFile(snapPath, payload, existingSnap ? existingSnap.sha : undefined, 'save conversation snapshot ' + meta.id);
+        } catch(writeErr) {
+          console.warn('[跨端同步库] 云端快照写入返回异常，正在回读确认：', writeErr);
+          await sleep(1800);
+          var writtenSnap = null;
+          try { writtenSnap = await ghGetFile(snapPath); } catch(e){}
+          if (!writtenSnap) throw writeErr;
+        }
+
+        var indexOk = false;
+        try {
+          indexOk = await cloudUpsertIndex(entry);
+        } catch(indexErr) {
+          console.warn('[跨端同步库] 云端索引写入返回异常，正在回读确认：', indexErr);
+        }
+        if (!indexOk) {
+          await sleep(1800);
+          indexOk = await cloudIndexHas(entry);
+        }
+        if (!indexOk) throw new Error('cloud index verify failed');
+
         seenQueue('conv:' + PLATFORM + ':' + meta.id, meta.savedAt);
         await seenFlush();
         return true;
