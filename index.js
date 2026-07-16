@@ -52,6 +52,56 @@
       if (!data.entries) data.entries = {};
       return { name: String(name), data: data };
     }
+    // ===== 跨平台字段兼容（反方向）=====
+    // 如果这份世界书数据来自 Tavo（或者 CCv3 格式），entries 会是数组，字段也是 tavo/CCv3 那一套叫法
+    // （keywords/keys、strategy/constant、injectionPosition/position 等），跟 ST 自己 /api/worldinfo/edit
+    // 需要的"entries 是按 uid 做 key 的对象、字段叫 key/keysecondary/comment/disable/position(数字)"完全对不上，
+    // 直接传过去会静默失败或者存成空世界书。这里统一转换成 ST 原生格式再提交。
+    // 如果 entries 本来就是对象（说明这份数据本来就是 ST 格式，比如 ST 内部互相应用），原样返回，不做转换。
+    function looksLikeArrayLorebookEntries(entries){ return Array.isArray(entries); }
+    function tavoPositionToST(pos){
+      switch (pos) {
+        case 'lorebookBefore': case 'before_char': return 0;
+        case 'lorebookAfter': case 'after_char': return 1;
+        case 'topOfExampleMessages': return 2;
+        case 'bottomOfExampleMessages': return 3;
+        default: return 4; // atDepth 及其他没有直接对应的，退化成"按深度插入"
+      }
+    }
+    function normalizeTavoLorebookToST(data){
+      data = data || {};
+      if (!looksLikeArrayLorebookEntries(data.entries)) return data; // 已经是 ST 原生对象格式，原样返回
+      var entriesObj = {};
+      data.entries.forEach(function(e, idx){
+        e = e || {};
+        var keys = e.keywords || e.keys || [];
+        var keysecondary = e.secondaryKeywords || e.secondary_keys || [];
+        var constant = (e.strategy === 'constant') || (e.constant === true);
+        var selective = !!((e.secondaryKeywordStrategy && e.secondaryKeywordStrategy !== 'none') || e.selective === true);
+        var disable = (e.enabled === false);
+        entriesObj[String(idx)] = {
+          uid: idx,
+          key: Array.isArray(keys) ? keys : [],
+          keysecondary: Array.isArray(keysecondary) ? keysecondary : [],
+          comment: e.name || ('条目' + idx),
+          content: e.content || '',
+          constant: constant,
+          selective: selective,
+          selectiveLogic: 0,
+          order: 100,
+          position: tavoPositionToST(e.injectionPosition || e.position),
+          disable: disable,
+          probability: (e.probability != null ? e.probability : 100),
+          depth: (e.injectionDepth != null ? e.injectionDepth : 4),
+          sticky: e.sticky || 0,
+          cooldown: e.cooldown || 0,
+          delay: e.delay || 0
+        };
+      });
+      var out = Object.assign({}, data);
+      out.entries = entriesObj;
+      return out;
+    }
     var TV = {
       get: async function(k, scope){
         try {
@@ -152,12 +202,12 @@
           });
         },
         create: async function(obj){
-          var w = normalizeSTWorld(obj);
+          var w = normalizeSTWorld(normalizeTavoLorebookToST(obj));
           await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
           return w.name;
         },
         update: async function(obj){
-          var w = normalizeSTWorld(obj);
+          var w = normalizeSTWorld(normalizeTavoLorebookToST(obj));
           await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
           return w.name;
         }
