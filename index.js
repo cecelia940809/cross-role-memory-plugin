@@ -18,10 +18,15 @@
     function stInputEl(){
       return D.getElementById('send_textarea') || D.querySelector('textarea#send_textarea') || D.querySelector('textarea[name="send_textarea"]') || D.querySelector('textarea');
     }
+    function ccmAssetName(item, fallback){
+      item = item || {};
+      var data = (item.data && typeof item.data === 'object') ? item.data : {};
+      return item.name || item.ch_name || item.scriptName || item.file_id || item.avatar || item.avatar_url || item.filename || item.title || item.key || item.uid || data.name || data.ch_name || fallback || 'unnamed';
+    }
     function normalizeAsset(item, idx){
       item = item || {};
-      var name = item.name || item.avatar || item.filename || item.title || item.key || item.uid || ('item_' + idx);
-      var id = item.id || item.avatar || item.filename || item.key || name;
+      var name = ccmAssetName(item, 'item_' + idx);
+      var id = item.id || item.avatar || item.avatar_url || item.file_id || item.filename || item.key || item.scriptName || name;
       return { id: String(id), name: String(name), _raw: item };
     }
     function findByNameOrId(list, value){
@@ -33,17 +38,38 @@
       try { if (typeof getRequestHeaders === 'function') return getRequestHeaders(opts); } catch(e2){}
       return opts.omitContentType ? {} : { 'Content-Type': 'application/json' };
     }
-    async function stJsonPost(url, payload){
+    async function stPost(url, payload){
       var resp = await fetch(url, {
         method: 'POST',
         headers: stHeaders(),
         body: JSON.stringify(payload || {}),
         cache: 'no-cache'
       });
-      if (!resp.ok) throw new Error('ST API ' + url + ' failed: ' + resp.status);
-      return await resp.json();
+      var text = await resp.text();
+      if (!resp.ok) throw new Error('ST API ' + url + ' failed: ' + resp.status + (text ? ' ' + text.slice(0, 200) : ''));
+      if (!text) return null;
+      try { return JSON.parse(text); } catch(e){ return text; }
     }
-    function normalizeSTWorld(obj){
+    async function stJsonPost(url, payload){
+      return await stPost(url, payload);
+    }
+    function stSettings(){
+      try { var c = stContext(); if (c && (c.extensionSettings || c.extension_settings)) return c.extensionSettings || c.extension_settings; } catch(e){}
+      try { if (typeof extension_settings !== 'undefined') return extension_settings; } catch(e2){}
+      try { if (window.extension_settings) return window.extension_settings; } catch(e3){}
+      return {};
+    }
+    function stSaveSettings(){
+      try { var c = stContext(); if (c && typeof c.saveSettingsDebounced === 'function') { c.saveSettingsDebounced(); return; } } catch(e){}
+      try { if (typeof saveSettingsDebounced === 'function') { saveSettingsDebounced(); return; } } catch(e2){}
+    }
+    function ccmUuid(){
+      try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch(e){}
+      return 'ccm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+    function sanitizeSTFileName(name){
+      return String(name || 'imported').replace(/[\s.<>:"/\\|?*\x00-\x1F\x7F]/g, '_').slice(0, 80) || 'imported';
+    }    function normalizeSTWorld(obj){
       obj = obj || {};
       var name = obj.name || obj.id || 'Imported Lorebook';
       var data = Object.assign({}, obj);
@@ -102,7 +128,150 @@
       out.entries = entriesObj;
       return out;
     }
-    var TV = {
+    function normalizeSTCharacter(obj, existing){
+      obj = obj || {};
+      var data = (obj.data && typeof obj.data === 'object') ? obj.data : {};
+      var name = obj.ch_name || obj.name || data.name || obj.char_name || obj.id || 'Imported Character';
+      var out = Object.assign({}, data, obj);
+      out.ch_name = String(name);
+      out.name = String(name);
+      out.file_name = sanitizeSTFileName(out.file_name || name);
+      out.description = out.description || data.description || '';
+      out.personality = out.personality || data.personality || '';
+      out.first_mes = out.first_mes || out.first_message || data.first_mes || '';
+      out.mes_example = out.mes_example || data.mes_example || '';
+      out.scenario = out.scenario || data.scenario || '';
+      out.creator_notes = out.creator_notes || data.creator_notes || '';
+      out.system_prompt = out.system_prompt || data.system_prompt || '';
+      out.post_history_instructions = out.post_history_instructions || data.post_history_instructions || '';
+      out.tags = Array.isArray(out.tags) ? out.tags : (Array.isArray(data.tags) ? data.tags : []);
+      out.alternate_greetings = Array.isArray(out.alternate_greetings) ? out.alternate_greetings : (Array.isArray(data.alternate_greetings) ? data.alternate_greetings : []);
+      out.extensions = (out.extensions && typeof out.extensions === 'object') ? out.extensions : ((data.extensions && typeof data.extensions === 'object') ? data.extensions : {});
+      if (existing && (existing.id || existing.avatar || existing.avatar_url)) out.avatar_url = existing.avatar_url || existing.avatar || existing.id;
+      if (obj.avatar_url || obj.avatar) out.avatar_url = obj.avatar_url || obj.avatar;
+      delete out.id;
+      delete out.data;
+      return out;
+    }
+    async function stCharacterAll(){
+      try {
+        var data = await stJsonPost('/api/characters/all', {});
+        if (Array.isArray(data)) return data.map(normalizeAsset);
+        if (data && typeof data === 'object') {
+          return Object.keys(data).map(function(k, idx){
+            var raw = (data[k] && typeof data[k] === 'object') ? Object.assign({ avatar: k, avatar_url: k }, data[k]) : { avatar: k, name: String(data[k] || k) };
+            return normalizeAsset(raw, idx);
+          });
+        }
+      } catch(e){ console.error('[跨端同步库 ST] 读取角色卡列表失败：', e); }
+      try { var c = stContext(); var arr = c && Array.isArray(c.characters) ? c.characters : null; return arr ? arr.map(normalizeAsset) : null; } catch(e2){ return null; }
+    }
+    async function stCharacterGet(id){
+      var list = await stCharacterAll();
+      var hit = findByNameOrId(list, id)[0];
+      var avatar = (hit && (hit.id || hit.avatar || hit.avatar_url)) || id;
+      try {
+        var data = await stJsonPost('/api/characters/get', { avatar_url: String(avatar) });
+        if (data) {
+          data.id = String(avatar);
+          data.avatar_url = String(avatar);
+          if (!data.name) data.name = data.ch_name || (hit && hit.name) || String(id);
+          return data;
+        }
+      } catch(e){ console.warn('[跨端同步库 ST] 读取角色卡详情失败，回退列表数据：', e); }
+      return hit ? Object.assign({ id: hit.id, name: hit.name }, hit._raw || {}) : null;
+    }
+    async function stCharacterCreate(obj){
+      var payload = normalizeSTCharacter(obj, null);
+      return await stPost('/api/characters/create', payload);
+    }
+    async function stCharacterUpdate(obj){
+      var name = ccmAssetName(obj, '');
+      var existing = [];
+      try { existing = await stCharacterFind(name); } catch(e){}
+      var payload = normalizeSTCharacter(obj, existing && existing[0]);
+      if (!payload.avatar_url) return await stCharacterCreate(obj);
+      return await stPost('/api/characters/edit', payload);
+    }
+    async function stCharacterFind(name){
+      return findByNameOrId(await stCharacterAll(), name);
+    }
+    function stRegexStore(){
+      var ex = stSettings();
+      if (!Array.isArray(ex.regex)) ex.regex = [];
+      return ex.regex;
+    }
+    function stPlacementFromTavo(placements){
+      var map = { user: 1, char: 2, assistant: 2, ai: 2, lorebook: 5, worldinfo: 5 };
+      var arr = Array.isArray(placements) ? placements : [];
+      var out = arr.map(function(p){ return typeof p === 'number' ? p : map[String(p || '').toLowerCase()]; }).filter(function(p){ return p != null && !isNaN(p); });
+      return out.length ? out : [2];
+    }
+    function normalizeSTRegexScripts(obj){
+      obj = obj || {};
+      var entries = Array.isArray(obj.entries) ? obj.entries : [obj];
+      var scripts = entries.map(function(e, idx){
+        e = e || {};
+        var timing = e.timing || '';
+        var scriptName = e.scriptName || e.name || obj.scriptName || obj.name || ('Imported Regex ' + (idx + 1));
+        var placement = Array.isArray(e.placement) ? e.placement.slice() : stPlacementFromTavo(e.placements);
+        var sub = e.substituteRegex;
+        if (sub === undefined) sub = e.substitution === 'raw' ? 1 : (e.substitution === 'escaped' ? 2 : 0);
+        var minDepth = parseInt(e.minDepth, 10);
+        var maxDepth = parseInt(e.maxDepth, 10);
+        return Object.assign({}, e, {
+          id: e.id || ccmUuid(),
+          scriptName: String(scriptName),
+          name: String(scriptName),
+          findRegex: String(e.findRegex || e.find || e.pattern || ''),
+          replaceString: String(e.replaceString || e.replace || e.replacement || ''),
+          trimStrings: Array.isArray(e.trimStrings) ? e.trimStrings : [],
+          placement: placement,
+          disabled: e.disabled !== undefined ? !!e.disabled : (e.enabled === false),
+          markdownOnly: e.markdownOnly !== undefined ? !!e.markdownOnly : timing === 'display',
+          promptOnly: e.promptOnly !== undefined ? !!e.promptOnly : timing === 'send',
+          runOnEdit: !!e.runOnEdit,
+          substituteRegex: Number(sub) || 0,
+          minDepth: isNaN(minDepth) ? null : minDepth,
+          maxDepth: isNaN(maxDepth) ? null : maxDepth
+        });
+      }).filter(function(s){ return s.scriptName && s.findRegex; });
+      return scripts;
+    }
+    function stRegexAll(){
+      try { return stRegexStore().map(normalizeAsset); } catch(e){ return null; }
+    }
+    async function stRegexFind(name){
+      return findByNameOrId(stRegexAll(), name);
+    }
+    async function stRegexGet(id){
+      var hit = findByNameOrId(stRegexAll(), id)[0];
+      return hit ? Object.assign({ id: hit.id, name: hit.name }, hit._raw || {}) : null;
+    }
+    async function stRegexSave(obj){
+      var scripts = normalizeSTRegexScripts(obj);
+      if (!scripts.length) throw new Error('没有可导入的 ST 正则脚本');
+      var arr = stRegexStore();
+      scripts.forEach(function(script){
+        var at = arr.findIndex(function(x){ return String(x.id) === String(script.id) || String(x.scriptName || x.name) === String(script.scriptName); });
+        if (at >= 0) arr[at] = Object.assign({}, arr[at], script, { id: arr[at].id || script.id });
+        else arr.push(script);
+      });
+      stSaveSettings();
+      return scripts.length;
+    }
+    async function stRegexVerify(obj){
+      var wanted = normalizeSTRegexScripts(obj);
+      var arr = stRegexAll() || [];
+      return wanted.length > 0 && wanted.every(function(s){ return arr.some(function(x){ return String(x.name) === String(s.scriptName) || String(x.id) === String(s.id); }); });
+    }
+    async function stLorebookWrite(obj){
+      var w = normalizeSTWorld(normalizeTavoLorebookToST(obj));
+      await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
+      var check = await stJsonPost('/api/worldinfo/get', { name: w.name });
+      if (!check || !check.entries) throw new Error('ST 世界书写入后未能读取确认');
+      return w.name;
+    }    var TV = {
       get: async function(k, scope){
         try {
           var prefix = scope === 'chat' ? 'ccm_st_c_' : 'ccm_st_g_';
@@ -155,18 +324,19 @@
         }
       },
       character: {
-        all: async function(){ var c = stContext(); var arr = c && Array.isArray(c.characters) ? c.characters : null; return arr ? arr.map(normalizeAsset) : null; },
-        get: async function(id){ var arr = await TV.character.all(); var hit = findByNameOrId(arr, id)[0]; return hit ? Object.assign({ id: hit.id, name: hit.name }, hit._raw || {}) : null; },
-        find: async function(name){ return findByNameOrId(await TV.character.all(), name); },
-        create: async function(){ throw new Error('ST 角色卡导入暂未接入'); },
-        update: async function(){ throw new Error('ST 角色卡更新暂未接入'); }
+        all: stCharacterAll,
+        get: stCharacterGet,
+        find: stCharacterFind,
+        create: stCharacterCreate,
+        update: stCharacterUpdate
       },
       regex: {
-        all: async function(){ try { var c=stContext(); var ex=(c && (c.extensionSettings || c.extension_settings)) || window.extension_settings || {}; var arr=ex.regex || ex.regex_scripts || []; return Array.isArray(arr) ? arr.map(normalizeAsset) : null; } catch(e){ return null; } },
-        get: async function(id){ var arr = await TV.regex.all(); var hit = findByNameOrId(arr, id)[0]; return hit ? Object.assign({ id: hit.id, name: hit.name }, hit._raw || {}) : null; },
-        find: async function(name){ return findByNameOrId(await TV.regex.all(), name); },
-        create: async function(){ throw new Error('ST 正则导入暂未接入'); },
-        update: async function(){ throw new Error('ST 正则更新暂未接入'); }
+        all: async function(){ return stRegexAll(); },
+        get: stRegexGet,
+        find: stRegexFind,
+        create: stRegexSave,
+        update: stRegexSave,
+        verify: stRegexVerify
       },
       lorebook: {
         all: async function(){
@@ -202,14 +372,10 @@
           });
         },
         create: async function(obj){
-          var w = normalizeSTWorld(normalizeTavoLorebookToST(obj));
-          await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
-          return w.name;
+          return await stLorebookWrite(obj);
         },
         update: async function(obj){
-          var w = normalizeSTWorld(normalizeTavoLorebookToST(obj));
-          await stJsonPost('/api/worldinfo/edit', { name: w.name, data: w.data });
-          return w.name;
+          return await stLorebookWrite(obj);
         }
       }
     };
@@ -641,7 +807,8 @@
         get: async function(id){ return await TV.regex.get(id); },
         find: async function(name){ try { return await TV.regex.find(name, { match: 'exact' }); } catch(e){ return []; } },
         createFn: async function(obj){ return await TV.regex.create(obj); },
-        updateFn: async function(obj){ return await TV.regex.update(obj); }
+        updateFn: async function(obj){ return await TV.regex.update(obj); },
+        verifyFn: async function(data){ return await TV.regex.verify(data); }
       },
       lorebook: {
         label: '世界书', dir: 'lorebooks',
@@ -658,17 +825,62 @@
       return await ASSET_KINDS[kind].all();
     }
 
+    function assetDisplayName(obj, fallback){
+      obj = obj || {};
+      var data = (obj.data && typeof obj.data === 'object') ? obj.data : {};
+      return String(obj.name || obj.ch_name || obj.scriptName || obj.file_id || obj.filename || obj.avatar || obj.avatar_url || obj.title || data.name || data.ch_name || fallback || 'unnamed');
+    }
+    function assetListId(obj){
+      obj = obj || {};
+      return obj.id || obj.avatar || obj.avatar_url || obj.file_id || obj.filename || obj.key || obj.scriptName || obj.name || obj.ch_name;
+    }
+    function assetListHit(list, value){
+      value = String(value || '');
+      return (list || []).filter(function(it){
+        return [assetListId(it), it.name, it.ch_name, it.scriptName, it.file_id, it.filename].some(function(v){ return String(v || '') === value; });
+      })[0];
+    }
+    async function assetFullForCloud(kind, id){
+      var full = null;
+      try { full = await ASSET_KINDS[kind].get(id); } catch(e){ console.warn('[跨端同步库] 直接读取资产失败，尝试列表兜底：', e); }
+      if (full) { full.name = assetDisplayName(full, id); return full; }
+      var list = null;
+      try { list = await ASSET_KINDS[kind].all(); } catch(e2){}
+      var hit = assetListHit(list, id);
+      if (hit) {
+        var hitId = assetListId(hit);
+        try { if (hitId) full = await ASSET_KINDS[kind].get(hitId); } catch(e3){}
+        try { if (!full && hit.name && String(hit.name) !== String(hitId)) full = await ASSET_KINDS[kind].get(hit.name); } catch(e4){}
+        if (!full) full = Object.assign({ id: hitId, name: assetDisplayName(hit, id) }, hit._raw || hit);
+        full.name = assetDisplayName(full, assetDisplayName(hit, id));
+        return full;
+      }
+      return null;
+    }
+    async function assetVerifyLocal(kind, data){
+      try { if (ASSET_KINDS[kind].verifyFn) return !!(await ASSET_KINDS[kind].verifyFn(data)); } catch(e){}
+      var name = assetDisplayName(data, '');
+      if (!name) return false;
+      var existing = [];
+      try { existing = await ASSET_KINDS[kind].find(name); } catch(e2){}
+      if ((!existing || !existing.length) && data && data.id && String(data.id) !== name) {
+        try { existing = await ASSET_KINDS[kind].find(data.id); } catch(e3){}
+      }
+      return !!(existing && existing.length);
+    }
     // 把某个本地资产的完整内容推送到云端（原样存一份 JSON），silent=true 时不弹 toast（批量推送用）
     async function assetPushToCloud(kind, id, silent){
       if (!cloudConfigured()) { if(!silent) showToast('请先在"云同步设置"里配置好 GitHub Token 和仓库'); return false; }
       try {
-        var full = await ASSET_KINDS[kind].get(id);
+        var full = await assetFullForCloud(kind, id);
         if (!full) { if(!silent) showToast('读取本地数据失败'); return false; }
+        full.name = assetDisplayName(full, id);
         var path = assetPath(PLATFORM, kind, full.name);
         var existing = null;
         try { existing = await ghGetFile(path); } catch(e){}
         var newSha = await ghPutFile(path, JSON.stringify(full), existing ? existing.sha : undefined, '同步' + ASSET_KINDS[kind].label + '：' + full.name);
-        // 自己刚推上去的内容，立刻标记为"已读"，避免自己给自己提示"有更新"
+        var saved = await assetCloudFetch(path);
+        if (!saved) throw new Error('云端写入后未能读取确认');
         seenQueue('asset:' + kind + ':' + PLATFORM + ':' + full.name, newSha || Date.now());
         await seenFlush();
         if (!silent) showToast(ASSET_KINDS[kind].label + '「' + full.name + '」已推送到云端');
@@ -697,22 +909,23 @@
       } catch(e){ console.error('[跨端同步库] 资产云端详情读取失败：', e); return null; }
     }
 
-    // 把云端某个资产应用到本地：本地已存在同名的就更新，不存在就新建（这两步都会弹出 Tavo 自己的确认框）
-    // 注：这里统一走 create/update，不用 import——因为我们云端存的是 tavo.*.get() 原样导出的 tavo 原生字段格式，
-    // 而 tavo.*.import() 按官方文档是吃 SillyTavern/CCv3 格式（字段名不一样），用 import 会导致字段对不上。
+    // 把云端某个资产应用到本地：本地已存在同名的就更新，不存在就新建。
     async function assetApplyFromCloud(kind, path){
       try {
         var data = await assetCloudFetch(path);
         if (!data) { showToast('读取云端数据失败'); return false; }
+        data.name = assetDisplayName(data, path);
         var existing = [];
         try { existing = await ASSET_KINDS[kind].find(data.name); } catch(e){}
         if (existing && existing.length) {
-          var merged = Object.assign({}, data, { id: existing[0].id });
+          var merged = Object.assign({}, data, { id: existing[0].id || existing[0].avatar || existing[0].avatar_url || data.id });
           await ASSET_KINDS[kind].updateFn(merged);
+          if (!(await assetVerifyLocal(kind, merged))) { showToast(ASSET_KINDS[kind].label + '「' + data.name + '」更新未确认写入'); return false; }
           showToast(ASSET_KINDS[kind].label + '「' + data.name + '」已更新到本地');
         } else {
           var withoutId = Object.assign({}, data); delete withoutId.id;
           await ASSET_KINDS[kind].createFn(withoutId);
+          if (!(await assetVerifyLocal(kind, withoutId))) { showToast(ASSET_KINDS[kind].label + '「' + data.name + '」导入未确认写入'); return false; }
           showToast(ASSET_KINDS[kind].label + '「' + data.name + '」已导入到本地');
         }
         return true;
@@ -734,16 +947,18 @@
       try {
         var data = await assetCloudFetch(path);
         if (!data) return false;
+        data.name = assetDisplayName(data, path);
         var existing = [];
         try { existing = await ASSET_KINDS[kind].find(data.name); } catch(e){}
         if (existing && existing.length) {
-          var merged = Object.assign({}, data, { id: existing[0].id });
+          var merged = Object.assign({}, data, { id: existing[0].id || existing[0].avatar || existing[0].avatar_url || data.id });
           await ASSET_KINDS[kind].updateFn(merged);
+          return await assetVerifyLocal(kind, merged);
         } else {
           var withoutId = Object.assign({}, data); delete withoutId.id;
           await ASSET_KINDS[kind].createFn(withoutId);
+          return await assetVerifyLocal(kind, withoutId);
         }
-        return true;
       } catch(e){ console.error('[跨端同步库] 资产应用失败：', e); return false; }
     }
 
