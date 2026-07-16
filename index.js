@@ -834,6 +834,10 @@
       obj = obj || {};
       return obj.id || obj.avatar || obj.avatar_url || obj.file_id || obj.filename || obj.key || obj.scriptName || obj.name || obj.ch_name;
     }
+    function assetNameFromPath(path){
+      var file = String(path || '').split('/').pop().replace(/\\.json$/i, '');
+      return file || String(path || 'unnamed');
+    }
     function assetListHit(list, value){
       value = String(value || '');
       return (list || []).filter(function(it){
@@ -914,7 +918,7 @@
       try {
         var data = await assetCloudFetch(path);
         if (!data) { showToast('读取云端数据失败'); return false; }
-        data.name = assetDisplayName(data, path);
+        data.name = assetDisplayName(data, assetNameFromPath(path));
         var existing = [];
         try { existing = await ASSET_KINDS[kind].find(data.name); } catch(e){}
         if (existing && existing.length) {
@@ -947,7 +951,7 @@
       try {
         var data = await assetCloudFetch(path);
         if (!data) return false;
-        data.name = assetDisplayName(data, path);
+        data.name = assetDisplayName(data, assetNameFromPath(path));
         var existing = [];
         try { existing = await ASSET_KINDS[kind].find(data.name); } catch(e){}
         if (existing && existing.length) {
